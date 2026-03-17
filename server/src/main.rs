@@ -109,10 +109,26 @@ async fn get_num_files(path: &Path) -> io::Result<usize> {
     Ok(num_files)
 }
 
+async fn persist_pair_notification_target(
+    auth: &BasicAuth,
+    target: &NotificationTarget,
+) -> io::Result<()> {
+    let root = Path::new("data").join(&auth.username);
+    let target_path = root.join("notification_target.json");
+    check_path_sandboxed(&root, &target_path)?;
+
+    fs::create_dir_all(&root).await?;
+    let target_json = serde_json::to_vec(target)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    fs::write(target_path, target_json).await?;
+    Ok(())
+}
+
 #[post("/pair", data = "<data>")]
 async fn pair(
     data: Json<PairingRequest>,
     state: &rocket::State<SharedPairingState>,
+    auth: BasicAuth,
 ) -> Json<PairingResponse> {
     debug!(
         "[PAIR] Entered pair method with role: {}, token: {}",
@@ -163,6 +179,7 @@ async fn pair(
 
     let notify;
     let expired_at;
+    let target_to_persist;
     {
         let mut entry = entry_arc.lock().unwrap();
 
@@ -207,6 +224,12 @@ async fn pair(
             entry.phone_connected, entry.camera_connected
         );
 
+        target_to_persist = if role == "phone" {
+            entry.notification_target.clone()
+        } else {
+            None
+        };
+
         if entry.phone_connected && entry.camera_connected {
             debug!("[PAIR] Both parties connected, returning 'paired'");
             entry.notify.notify_waiters();
@@ -228,6 +251,19 @@ async fn pair(
             "[PAIR] Only one side connected, waiting until {:?}",
             expired_at
         );
+    }
+
+    if let Some(target) = target_to_persist.as_ref() {
+        if let Err(e) = persist_pair_notification_target(&auth, target).await {
+            error!(
+                "[PAIR] Failed to persist notification target from pair payload: {e}"
+            );
+        } else {
+            debug!(
+                "[PAIR] Persisted notification target from pair payload (platform={})",
+                target.platform
+            );
+        }
     }
 
     let wait_duration = expired_at.saturating_duration_since(Instant::now());

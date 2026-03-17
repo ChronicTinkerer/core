@@ -508,7 +508,7 @@ fn core(
                     "Sending the post-upload notification to start downloading over {}.",
                     platform_label
                 );
-                let notification_timestamp = 0;
+                let notification_timestamp: u64 = 0;
                 let notification_msg = clients[FCM]
                     .encrypt(&bincode::serialize(&notification_timestamp).unwrap())?;
                 clients[FCM].save_group_state().unwrap();
