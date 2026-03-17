@@ -20,6 +20,7 @@ pub mod routes {
     pub const ROUTE_DELETE_CAMERA: &str = "/<camera>";
     pub const ROUTE_FCM_TOKEN: &str = "/fcm_token";
     pub const ROUTE_FCM_NOTIFICATION: &str = "/fcm_notification";
+    pub const ROUTE_NOTIFICATION_TARGET: &str = "/notification_target";
     pub const ROUTE_LIVESTREAM_START: &str = "/livestream/<camera>";
     pub const ROUTE_LIVESTREAM_CHECK: &str = "/livestream/<camera>";
     pub const ROUTE_LIVESTREAM_UPLOAD: &str = "/livestream/<camera>/<filename>";
@@ -72,6 +73,16 @@ pub mod routes {
         RouteSpec {
             method: HttpMethod::Post,
             path: ROUTE_FCM_NOTIFICATION,
+            params: PARAM_NONE,
+        },
+        RouteSpec {
+            method: HttpMethod::Post,
+            path: ROUTE_NOTIFICATION_TARGET,
+            params: PARAM_NONE,
+        },
+        RouteSpec {
+            method: HttpMethod::Get,
+            path: ROUTE_NOTIFICATION_TARGET,
             params: PARAM_NONE,
         },
         RouteSpec {
@@ -162,11 +173,32 @@ pub mod types {
     pub struct PairingRequest {
         pub pairing_token: String,
         pub role: String,
+        #[serde(default)]
+        pub notification_target: Option<NotificationTarget>,
     }
 
-    #[derive(Debug, Serialize)]
+    #[derive(Debug, Serialize, Deserialize, Clone)]
+    pub struct IosRelayBinding {
+        pub relay_base_url: String,
+        pub hub_token: String,
+        pub app_install_id: String,
+        pub hub_id: String,
+        pub device_token: String,
+        pub expires_at_epoch_ms: u64,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Clone)]
+    pub struct NotificationTarget {
+        pub platform: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub ios_relay_binding: Option<IosRelayBinding>,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Clone)]
     pub struct PairingResponse {
         pub status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub notification_target: Option<NotificationTarget>,
     }
 
     #[derive(Debug, Serialize)]

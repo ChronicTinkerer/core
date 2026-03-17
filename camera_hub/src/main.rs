@@ -11,10 +11,9 @@ extern crate serde_derive;
 use cfg_if::cfg_if;
 use docopt::Docopt;
 use secluso_client_lib::http_client::HttpClient;
-use secluso_client_lib::mls_client::{MlsClient, ClientType};
+use secluso_client_lib::mls_client::{ClientType, MlsClient};
 use secluso_client_lib::mls_clients::{
-    MlsClients, CONFIG, FCM, LIVESTREAM, MLS_CLIENT_TAGS,
-    MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
+    MlsClients, CONFIG, FCM, LIVESTREAM, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
 };
 use secluso_client_lib::thumbnail_meta_info::ThumbnailMetaInfo;
 use std::array;
@@ -58,6 +57,10 @@ use crate::pairing::{
 mod config;
 
 use crate::config::process_config_command;
+
+mod notification_target;
+
+use crate::notification_target::send_notification;
 
 mod fmp4;
 mod mp4;
@@ -108,7 +111,7 @@ struct Args {
     flag_reset: bool,
     flag_reset_full: bool,
     flag_test_motion: bool,
-     #[cfg(feature = "raspberry")]
+    #[cfg(feature = "raspberry")]
     flag_save_all: bool,
     #[cfg(feature = "ip")]
     flag_test_livestream: bool,
@@ -246,7 +249,13 @@ fn reset(camera: &dyn Camera, reset_full: bool) -> io::Result<()> {
         );
 
         // First, clean up MLS users
-        match MlsClient::new(camera_name, first_time, state_dir.clone(), tag.to_string(), ClientType::Camera) {
+        match MlsClient::new(
+            camera_name,
+            first_time,
+            state_dir.clone(),
+            tag.to_string(),
+            ClientType::Camera,
+        ) {
             Ok(mut client) => match client.clean() {
                 Ok(_) => {
                     info!("{} client cleaned successfully.", tag)
@@ -371,7 +380,7 @@ fn core(
     let video_dir = camera.get_video_dir();
     let thumbnail_dir = camera.get_thumbnail_dir();
     let mut delivery_monitor =
-        DeliveryMonitor::from_file_or_new(video_dir, thumbnail_dir, state_dir);
+        DeliveryMonitor::from_file_or_new(video_dir, thumbnail_dir, state_dir.clone());
     let livestream_request = Arc::new(Mutex::new(false));
     let livestream_request_clone = Arc::clone(&livestream_request);
     let group_livestream_name_clone = clients[LIVESTREAM].get_group_name().unwrap();
@@ -432,6 +441,7 @@ fn core(
                 || locked_motion_check_time.unwrap().le(&Instant::now()))
         {
             let video_info = VideoInfo::new();
+            let motion_timestamp = video_info.timestamp;
             println!("Detected motion.");
 
             // We send the thumbnail BEFORE the FCM notification, to ensure that when the mobile app receives it, it can download it.
@@ -460,14 +470,15 @@ fn core(
             }
 
             if !test_mode {
-                info!("Sending the FCM notification with timestamp.");
-                let notification_msg =
-                    clients[FCM].encrypt(&bincode::serialize(&video_info.timestamp).unwrap())?;
+                let state_dir_ref = state_dir.as_str();
+                info!("Sending the motion notification with timestamp.");
+                let notification_msg = clients[FCM]
+                    .encrypt(&bincode::serialize(&motion_timestamp).unwrap())?;
                 clients[FCM].save_group_state().unwrap();
-                match http_client.send_fcm_notification(notification_msg) {
+                match send_notification(state_dir_ref, &http_client, notification_msg) {
                     Ok(_) => {}
                     Err(e) => {
-                        error!("Failed to send FCM notification ({})", e);
+                        error!("Failed to send motion notification ({})", e);
                     }
                 }
             }
@@ -486,16 +497,25 @@ fn core(
             );
 
             if !test_mode {
-                info!("Sending the FCM notification to start downloading.");
-                //Timestamp of 0 tells the app it's time to start downloading.
-                let dummy_timestamp: u64 = 0;
-                let notification_msg =
-                    clients[FCM].encrypt(&bincode::serialize(&dummy_timestamp).unwrap())?;
+                let state_dir_ref = state_dir.as_str();
+                let target =
+                    notification_target::refresh_notification_target(state_dir_ref, &http_client);
+                let platform_label = target
+                    .as_ref()
+                    .map(|target| target.platform.as_str())
+                    .unwrap_or("fcm");
+                info!(
+                    "Sending the post-upload notification to start downloading over {}.",
+                    platform_label
+                );
+                let notification_timestamp = 0;
+                let notification_msg = clients[FCM]
+                    .encrypt(&bincode::serialize(&notification_timestamp).unwrap())?;
                 clients[FCM].save_group_state().unwrap();
-                match http_client.send_fcm_notification(notification_msg) {
+                match send_notification(state_dir_ref, &http_client, notification_msg) {
                     Ok(_) => {}
                     Err(e) => {
-                        error!("Failed to send FCM notification ({})", e);
+                        error!("Failed to send motion notification ({})", e);
                     }
                 }
             }

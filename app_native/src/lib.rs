@@ -26,7 +26,8 @@ use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::str;
 use std::str::FromStr;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use log::info;
 
 // Used to generate random names.
@@ -34,6 +35,10 @@ use log::info;
 // Note: even if collision happens, it has no impact on
 // our security guarantees. Will only cause availability issues.
 const NUM_RANDOM_CHARS: u8 = 16;
+const CAMERA_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const CAMERA_IO_TIMEOUT: Duration = Duration::from_secs(12);
+const CAMERA_CONNECT_RETRIES: usize = 3;
+const CAMERA_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(350);
 
 #[flutter_rust_bridge::frb]
 pub struct Clients {
@@ -215,6 +220,35 @@ fn send_timestamp(
     Ok(())
 }
 
+fn connect_camera_stream(addr: &SocketAddr) -> io::Result<TcpStream> {
+    let mut last_error: Option<io::Error> = None;
+
+    for attempt in 1..=CAMERA_CONNECT_RETRIES {
+        info!(
+            "Connecting to camera (attempt {attempt}/{CAMERA_CONNECT_RETRIES}, addr={addr})"
+        );
+
+        match TcpStream::connect_timeout(addr, CAMERA_CONNECT_TIMEOUT) {
+            Ok(stream) => {
+                stream.set_read_timeout(Some(CAMERA_IO_TIMEOUT))?;
+                stream.set_write_timeout(Some(CAMERA_IO_TIMEOUT))?;
+                let _ = stream.set_nodelay(true);
+                info!("Connected to camera transport (addr={addr})");
+                return Ok(stream);
+            }
+            Err(e) => {
+                info!("Error (connect attempt {attempt}): {e}");
+                last_error = Some(e);
+                if attempt < CAMERA_CONNECT_RETRIES {
+                    thread::sleep(CAMERA_CONNECT_RETRY_DELAY);
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| io::Error::other("camera connect failed")))
+}
+
 #[flutter_rust_bridge::frb]
 fn pair_with_camera(
     stream: &mut TcpStream,
@@ -319,7 +353,7 @@ pub fn add_camera(
         }
     };
 
-    let mut stream = match TcpStream::connect(&addr) {
+    let mut stream = match connect_camera_stream(&addr) {
         Ok(s) => s,
         Err(e) => {
             info!("Error (connect): {e}");
@@ -329,6 +363,7 @@ pub fn add_camera(
 
     if standalone_camera {
         // Need to send timestamp. RPi needs it for setting date/time.
+        info!("Sending timestamp to camera");
         if let Err(e) = send_timestamp(
             &mut stream,
         ) {
@@ -338,6 +373,7 @@ pub fn add_camera(
     }
 
     // Perform pairing
+    info!("Starting camera pairing handshake");
     if let Err(e) = pair_with_camera(
         &mut stream,
         &camera_name,
@@ -347,8 +383,10 @@ pub fn add_camera(
         info!("Error (pairing): {e}");
         return "Error".to_string();
     }
+    info!("Camera pairing handshake completed");
 
     // Send credentials (username, password, and IP address of the server)
+    info!("Sending credentials to camera");
     if let Err(e) = send_credentials_full(
         &mut stream,
         &mut clients.mls_clients[CONFIG],
@@ -358,6 +396,7 @@ pub fn add_camera(
         return "Error".to_string();
     }
 
+    info!("Waiting for firmware version from camera");
     let firmware_version =
         match receive_firmware_version(&mut stream, &mut clients.mls_clients[CONFIG]) {
             Ok(version) => version,
@@ -369,6 +408,7 @@ pub fn add_camera(
 
     // Send Wi-Fi info
     if standalone_camera {
+        info!("Sending Wi-Fi info to camera");
         if let Err(e) = send_wifi_and_pairing_info(
             &mut stream,
             &mut clients.mls_clients[CONFIG],

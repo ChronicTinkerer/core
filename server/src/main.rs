@@ -20,21 +20,21 @@ use rocket::data::{Data, ToByteUnit};
 use rocket::response::content::RawText;
 use rocket::response::stream::{Event, EventStream};
 use rocket::serde::json::Json;
-use rocket::{Request, Response, tokio};
+use rocket::fairing::{Fairing, Info, Kind};
+use rocket::http::Header;
 use rocket::tokio::fs::{self, File};
 use rocket::tokio::select;
 use rocket::tokio::sync::broadcast::{channel, Sender};
 use rocket::tokio::sync::Notify;
 use rocket::tokio::task;
 use rocket::tokio::time::timeout;
-use rocket::Shutdown;
+use rocket::{Request, Response, Shutdown, tokio};
 use secluso_server_backbone::types::{
     ConfigResponse, GroupTimestamp, MotionPairs, PairingRequest, PairingResponse, ServerStatus,
+    NotificationTarget,
 };
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use rocket::fairing::{Fairing, Info, Kind};
-use rocket::http::Header;
 
 pub mod auth;
 pub mod fcm;
@@ -66,8 +66,6 @@ impl Fairing for ServerVersionHeader {
         response.set_header(header); // Modify the request with the new header
     }
 }
-
-
 // Per-user livestream start state
 #[derive(Clone)]
 struct EventState {
@@ -82,6 +80,7 @@ struct PairingEntry {
     camera_connected: bool,
     phone_notified: bool,
     camera_notified: bool,
+    notification_target: Option<NotificationTarget>,
     created_at: Instant,
     notify: Arc<Notify>,
     expired: bool,
@@ -125,6 +124,7 @@ async fn pair(
         debug!("[PAIR] Invalid role: {}", role);
         return Json(PairingResponse {
             status: "invalid_role".into(),
+            notification_target: None,
         });
     }
 
@@ -141,6 +141,7 @@ async fn pair(
                     camera_connected: false,
                     phone_notified: false,
                     camera_notified: false,
+                    notification_target: None,
                     created_at: Instant::now(),
                     notify: Arc::new(Notify::new()),
                     expired: false,
@@ -156,6 +157,7 @@ async fn pair(
         debug!("[PAIR] Invalid token contains quote character: {}", token);
         return Json(PairingResponse {
             status: "invalid_token".into(),
+            notification_target: None,
         });
     }
 
@@ -168,6 +170,7 @@ async fn pair(
             debug!("[PAIR] Session already expired for token: {}", token);
             return Json(PairingResponse {
                 status: "expired".into(),
+                notification_target: entry.notification_target.clone(),
             });
         }
 
@@ -182,6 +185,7 @@ async fn pair(
             entry.expired = true;
             return Json(PairingResponse {
                 status: "expired".into(),
+                notification_target: entry.notification_target.clone(),
             });
         }
 
@@ -189,6 +193,7 @@ async fn pair(
             "phone" => {
                 debug!("[PAIR] Phone connected");
                 entry.phone_connected = true;
+                entry.notification_target = data.notification_target.clone();
             }
             "camera" => {
                 debug!("[PAIR] Camera connected");
@@ -213,6 +218,7 @@ async fn pair(
             entry.expired = true;
             return Json(PairingResponse {
                 status: "paired".into(),
+                notification_target: entry.notification_target.clone(),
             });
         }
 
@@ -244,6 +250,7 @@ async fn pair(
         entry.expired = true;
         Json(PairingResponse {
             status: "paired".into(),
+            notification_target: entry.notification_target.clone(),
         })
     } else {
         debug!("[PAIR] Notify wait completed: pairing expired.");
@@ -255,6 +262,7 @@ async fn pair(
         }
         Json(PairingResponse {
             status: "expired".into(),
+            notification_target: entry.notification_target.clone(),
         })
     }
 }
@@ -398,6 +406,34 @@ async fn upload_fcm_token(data: Data<'_>, auth: BasicAuth) -> io::Result<String>
     file.sync_all().await?;
 
     Ok("ok".to_string())
+}
+
+#[post("/notification_target", format = "json", data = "<data>")]
+async fn upload_notification_target(
+    data: Json<NotificationTarget>,
+    auth: BasicAuth,
+) -> io::Result<String> {
+    let root = Path::new("data").join(&auth.username);
+    let target_path = root.join("notification_target.json");
+    check_path_sandboxed(&root, &target_path)?;
+
+    fs::create_dir_all(&root).await?;
+    let target_json = serde_json::to_vec(&data.into_inner())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    fs::write(target_path, target_json).await?;
+
+    Ok("ok".to_string())
+}
+
+#[get("/notification_target")]
+async fn retrieve_notification_target(auth: BasicAuth) -> Option<Json<NotificationTarget>> {
+    let root = Path::new("data").join(&auth.username);
+    let target_path = root.join("notification_target.json");
+    check_path_sandboxed(&root, &target_path).ok()?;
+
+    let raw = fs::read_to_string(target_path).await.ok()?;
+    let parsed = serde_json::from_str::<NotificationTarget>(&raw).ok()?;
+    Some(Json(parsed))
 }
 
 #[post("/fcm_notification", data = "<data>")]
@@ -881,6 +917,8 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
                 delete_file,
                 delete_camera,
                 upload_fcm_token,
+                upload_notification_target,
+                retrieve_notification_target,
                 send_fcm_notification,
                 livestream_start,
                 livestream_check,

@@ -3,6 +3,7 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
 use crate::initialize_mls_clients;
+use crate::notification_target::persist_notification_target;
 use crate::traits::Camera;
 use cfg_if::cfg_if;
 use openmls::prelude::KeyPackage;
@@ -11,9 +12,10 @@ use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::mls_client::MlsClient;
 use secluso_client_lib::mls_clients::{MlsClients, CONFIG};
 use secluso_client_lib::pairing;
- use secluso_client_lib::pairing::generate_ip_camera_secret;
+use secluso_client_lib::pairing::generate_ip_camera_secret;
 use secluso_client_server_lib::auth::parse_user_credentials_full;
 use serde_json::Value;
+use std::fs;
 use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -21,7 +23,6 @@ use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
-use std::fs;
 use std::{thread, time::Duration};
 
 // Used to generate random names.
@@ -107,8 +108,7 @@ fn perform_pairing_handshake(
     let pairing = pairing::Camera::new(camera_key_package);
 
     let app_msg = read_varying_len(stream)?;
-    let (app_key_package, camera_msg) =
-        pairing.process_app_msg_and_generate_msg_to_app(app_msg)?;
+    let (app_key_package, camera_msg) = pairing.process_app_msg_and_generate_msg_to_app(app_msg)?;
     write_varying_len(stream, &camera_msg)?;
 
     Ok(app_key_package)
@@ -337,7 +337,7 @@ pub fn pair_all(
     let secret = if let Some(s) = input_camera_secret.clone() {
         s
     } else {
-       // This has to be an IP camera. If the camera_secret does not exist for Raspberry Pi, it will not proceed earlier on in the flow.
+        // This has to be an IP camera. If the camera_secret does not exist for Raspberry Pi, it will not proceed earlier on in the flow.
         generate_ip_camera_secret(&camera.get_name())?
     };
 
@@ -467,9 +467,24 @@ pub fn pair_all(
                                                 .unwrap()
                                                 .send_pairing_token(&pairing_token)
                                             {
-                                                Ok(status) => {
-                                                    debug!("[Pairing] Pairing token acknowledged with status: {status}");
-                                                    match status.as_str() {
+                                                Ok(pairing_status) => {
+                                                    debug!(
+                                                        "[Pairing] Pairing token acknowledged with status: {}",
+                                                        pairing_status.status
+                                                    );
+                                                    if let Some(target) =
+                                                        pairing_status.notification_target.as_ref()
+                                                    {
+                                                        if let Err(e) = persist_notification_target(
+                                                            &camera.get_state_dir(),
+                                                            target,
+                                                        ) {
+                                                            error!(
+                                                                "[Pairing] Failed to persist notification target: {e}"
+                                                            );
+                                                        }
+                                                    }
+                                                    match pairing_status.status.as_str() {
                                                         "paired" => {
                                                             debug!("[Pairing] Success: both sides connected.");
                                                         }
@@ -478,11 +493,17 @@ pub fn pair_all(
                                                             success = false;
                                                         }
                                                         "invalid_token" | "invalid_role" => {
-                                                            debug!("[Pairing] Error: invalid input ({status})");
+                                                            debug!(
+                                                                "[Pairing] Error: invalid input ({})",
+                                                                pairing_status.status
+                                                            );
                                                             success = false;
                                                         }
                                                         _ => {
-                                                            debug!("[Pairing] Unexpected status: {status}");
+                                                            debug!(
+                                                                "[Pairing] Unexpected status: {}",
+                                                                pairing_status.status
+                                                            );
                                                             success = false;
                                                         }
                                                     }

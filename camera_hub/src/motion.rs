@@ -3,6 +3,7 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
 use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
+use crate::notification_target::send_notification;
 use crate::traits::Camera;
 use image::RgbImage;
 use regex::Regex;
@@ -10,7 +11,7 @@ use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::mls_client::MlsClient;
 use secluso_client_lib::mls_clients::{MlsClients, FCM, MAX_OFFLINE_WINDOW, MOTION, THUMBNAIL};
 use secluso_client_lib::thumbnail_meta_info::{GeneralDetectionType, ThumbnailMetaInfo};
-use secluso_client_lib::video::{encrypt_video_file, encrypt_thumbnail_file};
+use secluso_client_lib::video::{encrypt_thumbnail_file, encrypt_video_file};
 use std::fs;
 use std::io;
 
@@ -105,8 +106,12 @@ pub fn prepare_motion_thumbnail(
 
     let epoch = encrypt_thumbnail_file(
         mls_client,
-        thumbnail_file_path.to_str().expect("Path is not valid UTF-8"),
-        enc_thumbnail_file_path.to_str().expect("Path is not valid UTF-8"),
+        thumbnail_file_path
+            .to_str()
+            .expect("Path is not valid UTF-8"),
+        enc_thumbnail_file_path
+            .to_str()
+            .expect("Path is not valid UTF-8"),
         &mut thumbnail_info,
     )?;
 
@@ -145,12 +150,13 @@ pub fn prepare_motion_video(
     let epoch = encrypt_video_file(
         mls_client,
         video_file_path.to_str().expect("Path is not valid UTF-8"),
-        enc_video_file_path.to_str().expect("Path is not valid UTF-8"),
+        enc_video_file_path
+            .to_str()
+            .expect("Path is not valid UTF-8"),
         video_info.timestamp,
     )?;
 
     assert!(epoch == video_info.epoch);
-    
 
     // FIXME: fatal crash point here. We have committed the update, but we will never enqueue it for sending.
     // Severity: medium.
@@ -224,7 +230,7 @@ pub fn send_pending_motion_videos(
         let notification_msg =
             clients[FCM].encrypt(&bincode::serialize(&dummy_timestamp).unwrap())?;
         clients[FCM].save_group_state().unwrap();
-        http_client.send_fcm_notification(notification_msg)?;
+        send_notification(&camera.get_state_dir(), http_client, notification_msg)?;
     }
 
     Ok(())
@@ -296,7 +302,7 @@ pub fn send_pending_thumbnails(
         let notification_msg =
             clients[FCM].encrypt(&bincode::serialize(&dummy_timestamp).unwrap())?;
         clients[FCM].save_group_state().unwrap();
-        http_client.send_fcm_notification(notification_msg)?;
+        send_notification(&camera.get_state_dir(), http_client, notification_msg)?;
     }
 
     Ok(())

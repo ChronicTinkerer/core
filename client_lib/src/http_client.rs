@@ -5,6 +5,7 @@
 use base64::engine::general_purpose::STANDARD as base64_engine;
 use base64::{engine::general_purpose, Engine as _};
 use reqwest::blocking::{Body, Client};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
@@ -16,6 +17,30 @@ pub struct HttpClient {
     server_addr: String,
     server_username: String,
     server_password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IosRelayBinding {
+    pub relay_base_url: String,
+    pub hub_token: String,
+    pub app_install_id: String,
+    pub hub_id: String,
+    pub device_token: String,
+    pub expires_at_epoch_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationTarget {
+    pub platform: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ios_relay_binding: Option<IosRelayBinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairingStatus {
+    pub status: String,
+    #[serde(default)]
+    pub notification_target: Option<NotificationTarget>,
 }
 
 //TODO: There's a lot of repitition between the functions here.
@@ -37,8 +62,8 @@ impl HttpClient {
         }
     }
 
-    /// Atomically confrm pairing with app
-    pub fn send_pairing_token(&self, pairing_token: &str) -> io::Result<String> {
+    /// Atomically confirm pairing with app and receive any phone-side notification target metadata.
+    pub fn send_pairing_token(&self, pairing_token: &str) -> io::Result<PairingStatus> {
         let url = format!("{}/pair", self.server_addr);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
@@ -73,14 +98,127 @@ impl HttpClient {
         let text = response
             .text()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-        let json: serde_json::Value = serde_json::from_str(&text)
+        serde_json::from_str::<PairingStatus>(&text)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+    }
+
+    pub fn fetch_notification_target(&self) -> io::Result<Option<NotificationTarget>> {
+        let url = format!("{}/notification_target", self.server_addr);
+
+        let auth_value = format!("{}:{}", self.server_username, self.server_password);
+        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
+        let auth_header = format!("Basic {}", auth_encoded);
+
+        let client = Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        let response = client
+            .get(&url)
+            .header("Authorization", auth_header)
+            .send()
+            .map_err(|e| io::Error::new(io::ErrorKind::TimedOut, e.to_string()))?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        if !response.status().is_success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Notification target fetch failed: {}", response.status()),
+            ));
+        }
+
+        let text = response
+            .text()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        let target = serde_json::from_str::<NotificationTarget>(&text)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        Ok(Some(target))
+    }
 
-        let status = json["status"]
-            .as_str()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing 'status'"))?;
+    pub fn send_ios_notification(
+        &self,
+        notification: Vec<u8>,
+        binding: &IosRelayBinding,
+    ) -> io::Result<()> {
+        const IOS_RELAY_USER_AGENT: &str = "SeclusoCameraHub/1.0";
 
-        Ok(status.to_string())
+        let relay_base = binding.relay_base_url.trim_end_matches('/');
+        if !relay_base.starts_with("https://") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Relay base URL must use https",
+            ));
+        }
+        let relay_url = format!("{relay_base}/hub/notify");
+
+        let payload = json!({
+            "hub_token": binding.hub_token,
+            "app_install_id": binding.app_install_id,
+            "hub_id": binding.hub_id,
+            "device_token": binding.device_token,
+            "payload": {
+                "aps": {
+                    "content-available": 1
+                },
+                "body": base64_engine.encode(notification),
+            },
+            "push_type": "background",
+        });
+
+        let client = Client::builder()
+            .timeout(Duration::from_secs(20))
+            .build()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        let response = client
+            .post(&relay_url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("User-Agent", IOS_RELAY_USER_AGENT)
+            .body(payload.to_string())
+            .send()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("<missing>")
+                .to_string();
+            let server = response
+                .headers()
+                .get(reqwest::header::SERVER)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("<missing>")
+                .to_string();
+            let via = response
+                .headers()
+                .get(reqwest::header::VIA)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("<missing>")
+                .to_string();
+            let cf_ray = response
+                .headers()
+                .get("cf-ray")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("<missing>")
+                .to_string();
+            let body = response.text().unwrap_or_default();
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "Relay error: {status} (content-type={content_type}, server={server}, via={via}, cf-ray={cf_ray}) {body}"
+                ),
+            ));
+        }
+
+        Ok(())
     }
 
     /// Uploads an (encrypted) file.
