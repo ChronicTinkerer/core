@@ -534,6 +534,24 @@ pub fn get_group_name(clients: &mut Option<Box<Clients>>, client_tag: &str) -> i
     clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()].get_group_name()
 }
 
+pub fn get_client_epoch(
+    clients: &mut Option<Box<Clients>>,
+    client_tag: &str,
+) -> io::Result<u64> {
+    if clients.is_none() {
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
+        ));
+    }
+
+    let mls_client_index = client_tag_to_index(client_tag);
+    if mls_client_index.is_none() {
+        return Err(io::Error::other("Error: No matching client!".to_string()));
+    }
+
+    clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()].get_epoch()
+}
+
 fn client_tag_to_index(tag: &str) -> Option<usize> {
     match tag {
         "motion" => Some(MOTION),

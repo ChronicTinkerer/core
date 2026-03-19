@@ -15,6 +15,10 @@ user_credentials_qrcode.png
 camera_secret
 camera_secret_qrcode.png
 pending_videos
+pending_thumbnails
+sample_data
+current_version
+example_app_data
 state
 cameras.yaml
 credentials_full

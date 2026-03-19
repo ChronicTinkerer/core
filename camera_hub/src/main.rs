@@ -62,18 +62,23 @@ mod notification_target;
 
 use crate::notification_target::send_notification;
 
+#[cfg(any(feature = "raspberry", feature = "ip"))]
 mod fmp4;
+#[cfg(any(feature = "raspberry", feature = "ip"))]
 mod mp4;
 
 cfg_if! {
-    if #[cfg(feature = "raspberry")] {
+    if #[cfg(feature = "manual")] {
+        mod manual;
+        use crate::manual::ManualCamera;
+    } else if #[cfg(feature = "raspberry")] {
         mod raspberry_pi;
         use crate::raspberry_pi::rpi_camera::RaspberryPiCamera;
     } else if #[cfg(feature = "ip")] {
         mod ip;
         use crate::ip::ip_camera::IpCamera;
     } else {
-        compile_error!("One of the features 'raspberry' or 'ip' must be enabled.");
+        compile_error!("One of the features 'manual', 'raspberry', or 'ip' must be enabled.");
     }
 }
 
@@ -136,7 +141,19 @@ fn main() -> io::Result<()> {
     fs::write("current_version", format!("v{}", env!("CARGO_PKG_VERSION")))?;
 
     cfg_if! {
-        if #[cfg(feature = "raspberry")] {
+        if #[cfg(feature = "manual")] {
+            let camera = ManualCamera::new(
+                "RPi".to_string(),
+                format!("{}/manual", STATE_DIR_GENERAL),
+                format!("{}/manual", VIDEO_DIR_GENERAL),
+                format!("{}/manual", THUMBNAIL_DIR_GENERAL),
+            )?;
+
+            let camera_list: Vec<Box<dyn Camera + Send>> = vec![Box::new(camera)];
+            // Manual mode is meant to stand in for the Raspberry Pi camera during local testing
+            let input_camera_secret = Some(get_input_camera_secret());
+            let connect_to_wifi = false;
+        } else if #[cfg(feature = "raspberry")] {
             let camera = RaspberryPiCamera::new(
                 "RPi".to_string(),
                 STATE_DIR_GENERAL.to_string(),
@@ -172,7 +189,7 @@ fn main() -> io::Result<()> {
 
             let connect_to_wifi = false;
         } else {
-            compile_error!("One of the features 'raspberry' or 'ip' must be enabled.");
+            compile_error!("One of the features 'manual', 'raspberry', or 'ip' must be enabled.");
         }
     }
 
@@ -523,7 +540,8 @@ fn core(
             locked_motion_check_time = Some(Instant::now().add(Duration::from_secs(60)));
         }
 
-        // Check for livestream requests every second
+        // Check for livestream requests frequently so the app doesn't sit on
+        // "starting livestream" for an extra second just waiting for the next poll.
         if locked_livestream_check_time.is_none()
             || locked_livestream_check_time.unwrap().le(&Instant::now())
         {
@@ -532,15 +550,17 @@ fn core(
             if *check {
                 info!("Livestream start detected");
                 *check = false;
-                livestream(
+                if let Err(e) = livestream(
                     &mut clients[LIVESTREAM],
                     camera,
                     &mut delivery_monitor,
                     &http_client,
-                )?;
+                ) {
+                    error!("Livestream returned error: {e}");
+                }
             }
 
-            locked_livestream_check_time = Some(Instant::now().add(Duration::from_secs(1)));
+            locked_livestream_check_time = Some(Instant::now().add(Duration::from_millis(100)));
         }
 
         // Check with the delivery monitor every minute

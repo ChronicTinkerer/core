@@ -4,7 +4,7 @@
 
 use secluso_app_native::{
     Clients, add_camera, decrypt_video, deregister, generate_heartbeat_request_config_command,
-    get_group_name, initialize, livestream_decrypt, livestream_update,
+    get_client_epoch, get_group_name, initialize, livestream_decrypt, livestream_update,
     process_heartbeat_config_response,
 };
 use secluso_client_lib::http_client::HttpClient;
@@ -68,6 +68,7 @@ fn main() -> io::Result<()> {
 
     fs::create_dir_all(format!("{}/{}/videos", DATA_DIR, APP_TAG)).unwrap();
     fs::create_dir_all(format!("{}/{}/encrypted", DATA_DIR, APP_TAG)).unwrap();
+    fs::create_dir_all(format!("{}/{}/pending_meta", DATA_DIR, APP_TAG)).unwrap();
 
     let app_first_time_path = Path::new(DATA_DIR).join(APP_TAG).join("first_time_done");
     let app_first_time: bool = !app_first_time_path.exists();
@@ -187,8 +188,11 @@ fn heartbeat_loop(
         for _i in 0..30 {
             println!("Attempt {_i}");
             thread::sleep(Duration::from_secs(2));
-            // We want to fetch all pending videos before checking for the heartbeat response.
+            // We want to fetch all pending media before checking for the heartbeat response.
+            // The heartbeat validates motion + livestream + thumbnail epochs, so catching up
+            // only motion videos can make a healthy camera look "invalid epoch" here.
             fetch_all_motion_videos(Arc::clone(&clients), http_client, tag);
+            fetch_all_thumbnails(Arc::clone(&clients), http_client, tag);
             match http_client.fetch_config_response(&config_group_name) {
                 Ok(resp) => {
                     config_response_opt = Some(resp);
@@ -229,6 +233,7 @@ fn heartbeat_loop(
                 // FIXME: Before processing the heartbeat response, we should make sure all motion videos are fetched and processed.
                 // But we're not doing that here, therefore an "invalid epoch" might not mean a corrupted channel.
                 println!("{response}");
+                log_client_epochs(Arc::clone(&clients));
                 ignored_heartbeats += 1;
                 if ignored_heartbeats >= 4 {
                     println!("The connection to the camera might have got corrupted. Consider pairing the app with the camera again.");
@@ -255,6 +260,18 @@ fn fetch_all_motion_videos(clients: Arc<Mutex<Option<Box<Clients>>>>, http_clien
     }
 }
 
+fn fetch_all_thumbnails(
+    clients: Arc<Mutex<Option<Box<Clients>>>>,
+    http_client: &HttpClient,
+    tag: &str,
+) {
+    loop {
+        if let Err(_) = fetch_thumbnail(Arc::clone(&clients), http_client, tag) {
+            return;
+        }
+    }
+}
+
 fn fetch_motion_video(
     clients: Arc<Mutex<Option<Box<Clients>>>>,
     http_client: &HttpClient,
@@ -276,9 +293,9 @@ fn fetch_motion_video(
 
     let group_name = get_group_name(&mut clients_locked, "motion")?;
 
-    let enc_filename = format!("{}", epoch);
+    let enc_filename = format!("encVideo{}", epoch);
     let enc_filepath = Path::new(DATA_DIR).join(tag).join("encrypted").join(&enc_filename);
-    match http_client.fetch_enc_video(&group_name, &enc_filepath) {
+    match http_client.fetch_enc_file_named(&group_name, &epoch.to_string(), &enc_filepath) {
         Ok(_) => {
             let dec_filename = decrypt_video(&mut clients_locked, enc_filename).unwrap();
             println!("{}: Received and decrypted file: {}", tag, dec_filename);
@@ -299,6 +316,71 @@ fn fetch_motion_video(
             return Err(e);
         }
     }
+}
+
+fn fetch_thumbnail(
+    clients: Arc<Mutex<Option<Box<Clients>>>>,
+    http_client: &HttpClient,
+    tag: &str,
+) -> io::Result<()> {
+    let mut clients_locked = clients.lock().unwrap();
+    let epoch_file_path = Path::new(DATA_DIR).join(tag).join("thumbnail_epoch");
+    let pending_meta_directory = Path::new(DATA_DIR).join(tag).join("pending_meta");
+
+    let mut epoch: u64 = if epoch_file_path.exists() {
+        let file = File::open(&epoch_file_path).expect("Cannot open thumbnail_epoch file");
+        let mut reader =
+            BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
+        let epoch_data = reader.fill_buf().unwrap();
+        bincode::deserialize(epoch_data).unwrap()
+    } else {
+        // The first thumbnail will be sent in MLS epoch 2.
+        2
+    };
+
+    let group_name = get_group_name(&mut clients_locked, "thumbnail")?;
+
+    let enc_filename = format!("encThumbnail{}", epoch);
+    let enc_filepath = Path::new(DATA_DIR).join(tag).join("encrypted").join(&enc_filename);
+    match http_client.fetch_enc_file_named(&group_name, &epoch.to_string(), &enc_filepath) {
+        Ok(_) => {
+            let dec_filename = secluso_app_native::decrypt_thumbnail(
+                &mut clients_locked,
+                enc_filename,
+                pending_meta_directory
+                    .to_str()
+                    .expect("pending_meta path is not valid UTF-8")
+                    .to_string(),
+            )
+            .unwrap();
+            println!("{}: Received and decrypted thumbnail: {}", tag, dec_filename);
+            let _ = fs::remove_file(enc_filepath);
+            epoch += 1;
+
+            let epoch_data = bincode::serialize(&epoch).unwrap();
+            let mut file =
+                fs::File::create(&epoch_file_path).expect("Could not create thumbnail_epoch file");
+            file.write_all(&epoch_data).unwrap();
+            file.flush().unwrap();
+            file.sync_all().unwrap();
+
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn log_client_epochs(clients: Arc<Mutex<Option<Box<Clients>>>>) {
+    let mut clients_locked = clients.lock().unwrap();
+
+    let motion_epoch = get_client_epoch(&mut clients_locked, "motion").unwrap_or(0);
+    let livestream_epoch = get_client_epoch(&mut clients_locked, "livestream").unwrap_or(0);
+    let thumbnail_epoch = get_client_epoch(&mut clients_locked, "thumbnail").unwrap_or(0);
+
+    println!(
+        "Local epochs => motion={}, livestream={}, thumbnail={}",
+        motion_epoch, livestream_epoch, thumbnail_epoch
+    );
 }
 
 fn motion_loop(

@@ -269,7 +269,17 @@ impl HttpClient {
             .unwrap()
             .to_string();
 
-        let server_url = format!("{}/{}/{}", self.server_addr, group_name, enc_file_name);
+        self.fetch_enc_file_named(group_name, &enc_file_name, enc_file_path)
+    }
+
+    /// Fetches an encrypted file whose server-side name and local temp filename differ.
+    pub fn fetch_enc_file_named(
+        &self,
+        group_name: &str,
+        server_file_name: &str,
+        local_file_path: &Path,
+    ) -> io::Result<()> {
+        let server_url = format!("{}/{}/{}", self.server_addr, group_name, server_file_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
@@ -295,7 +305,7 @@ impl HttpClient {
             ));
         }
 
-        let mut file = BufWriter::new(File::create(enc_file_path)?);
+        let mut file = BufWriter::new(File::create(local_file_path)?);
 
         io::copy(&mut response, &mut file)?;
         file.flush().unwrap();

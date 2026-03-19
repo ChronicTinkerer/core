@@ -96,15 +96,19 @@ pub fn livestream(
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let livestream_writer = LivestreamWriter::new(tx);
-    camera.launch_livestream(livestream_writer).unwrap();
+    camera.launch_livestream(livestream_writer)?;
 
     let mut chunk_number: u64 = 1;
 
     loop {
         // We include the chunk number in the chunk itself (and check it in the app)
         // to prevent a malicious server from reordering the chunks.
+        let Ok(fragment) = rx.recv() else {
+            info!("Ending livestream because the camera backend stopped producing fragments.");
+            break;
+        };
         let mut data: Vec<u8> = chunk_number.to_be_bytes().to_vec();
-        data.extend(rx.recv().unwrap());
+        data.extend(fragment);
 
         let received_epoch_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)

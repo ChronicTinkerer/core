@@ -6,15 +6,19 @@ use crate::delivery_monitor::VideoInfo;
 use crate::livestream::LivestreamWriter;
 use crate::motion::MotionResult;
 use anyhow::Error;
-use bytes::BytesMut;
 use std::io;
 
+#[cfg(any(feature = "raspberry", feature = "ip"))]
+use bytes::BytesMut;
+
+#[cfg(any(feature = "raspberry", feature = "ip"))]
 pub trait CodecParameters {
     fn write_codec_box(&self, buf: &mut BytesMut) -> Result<(), Error>;
     fn get_clock_rate(&self) -> u32;
     fn get_dimensions(&self) -> (u32, u32);
 }
 
+#[cfg(any(feature = "raspberry", feature = "ip"))]
 pub trait Mp4 {
     async fn video(
         &mut self,
