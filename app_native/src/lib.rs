@@ -15,7 +15,7 @@ use secluso_client_lib::mls_clients::{
     CONFIG, FCM, LIVESTREAM, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
 };
 use secluso_client_lib::pairing;
-use secluso_client_lib::video::{decrypt_video_file, decrypt_thumbnail_file};
+use secluso_client_lib::video::{encrypt_video_file, decrypt_video_file, decrypt_thumbnail_file};
 use openmls::prelude::KeyPackage;
 use serde_json::json;
 use std::array;
@@ -447,6 +447,28 @@ pub fn decrypt_video(
     decrypt_video_file(
         &mut clients.mls_clients[MOTION],
         &enc_pathname,
+    )
+}
+
+// This function is used to aid in performance testing; this is not used in the production app
+pub fn encrypt_video(
+    clients: &mut Option<Box<Clients>>,
+    video_pathname: String,
+    enc_pathname: String,
+    timestamp: u64,
+) -> io::Result<u64> {
+    if clients.is_none() {
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
+        ));
+    }
+
+    let clients = clients.as_mut().unwrap();
+    encrypt_video_file(
+        &mut clients.mls_clients[MOTION],
+        &video_pathname,
+        &enc_pathname,
+        timestamp
     )
 }
 
