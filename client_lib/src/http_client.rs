@@ -4,7 +4,7 @@
 
 use base64::engine::general_purpose::STANDARD as base64_engine;
 use base64::{engine::general_purpose, Engine as _};
-use reqwest::blocking::{Body, Client};
+use reqwest::blocking::{Body, Client, RequestBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs::File;
@@ -50,6 +50,14 @@ pub struct PairingStatus {
 // We use the MLS group name for that purpose.
 
 impl HttpClient {
+    pub fn authorized_headers(&self, request_builder: RequestBuilder) -> RequestBuilder {
+        let auth_value = format!("{}:{}", self.server_username, self.server_password);
+        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
+        let auth_header = format!("Basic {}", auth_encoded);
+
+        request_builder.header("Authorization", auth_header).header("Client-Version", env!("CARGO_PKG_VERSION"))
+    }
+
     pub fn new(
         server_addr: String, // ip_addr:port
         server_username: String,
@@ -66,10 +74,6 @@ impl HttpClient {
     pub fn send_pairing_token(&self, pairing_token: &str) -> io::Result<PairingStatus> {
         let url = format!("{}/pair", self.server_addr);
 
-        let auth_value = format!("{}:{}", self.server_username, self.server_password);
-        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
-        let auth_header = format!("Basic {}", auth_encoded);
-
         let body = json!({
             "pairing_token": pairing_token,
             "role": "camera",
@@ -80,9 +84,8 @@ impl HttpClient {
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = client
-            .post(&url)
-            .header("Authorization", auth_header)
+        let response = self.authorized_headers(client
+            .post(&url))
             .header("Content-Type", "application/json")
             .body(body.to_string())
             .send()
@@ -105,18 +108,13 @@ impl HttpClient {
     pub fn fetch_notification_target(&self) -> io::Result<Option<NotificationTarget>> {
         let url = format!("{}/notification_target", self.server_addr);
 
-        let auth_value = format!("{}:{}", self.server_username, self.server_password);
-        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
-        let auth_header = format!("Basic {}", auth_encoded);
-
         let client = Client::builder()
             .timeout(Duration::from_secs(15))
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = client
-            .get(&url)
-            .header("Authorization", auth_header)
+        let response = self.authorized_headers(client
+            .get(&url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::TimedOut, e.to_string()))?;
 
@@ -174,6 +172,7 @@ impl HttpClient {
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
+        // This does NOT need authorized_headers as it's a separate relay (public Secluso iOS relay)
         let response = client
             .post(&relay_url)
             .header("Content-Type", "application/json")
@@ -234,19 +233,14 @@ impl HttpClient {
         let file = File::open(enc_file_path)?;
         let reader = BufReader::new(file);
 
-        let auth_value = format!("{}:{}", self.server_username, self.server_password);
-        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
-        let auth_header = format!("Basic {}", auth_encoded);
-
         let client = Client::builder()
             .timeout(Duration::from_secs(120))
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = client
-            .post(server_url)
+        let response = self.authorized_headers(client
+            .post(server_url))
             .header("Content-Type", "application/octet-stream")
-            .header("Authorization", auth_header)
             .body(Body::new(reader))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
@@ -281,18 +275,13 @@ impl HttpClient {
     ) -> io::Result<()> {
         let server_url = format!("{}/{}/{}", self.server_addr, group_name, server_file_name);
 
-        let auth_value = format!("{}:{}", self.server_username, self.server_password);
-        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
-        let auth_header = format!("Basic {}", auth_encoded);
-
         let client = Client::builder()
             .timeout(Duration::from_secs(120))
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let mut response = client
-            .get(&server_url)
-            .header("Authorization", auth_header.clone())
+        let mut response = self.authorized_headers(client
+            .get(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
             .error_for_status()
@@ -311,9 +300,8 @@ impl HttpClient {
         file.flush().unwrap();
         file.into_inner()?.sync_all()?;
 
-        let del_response = client
-            .delete(&server_url)
-            .header("Authorization", auth_header)
+        let del_response = self.authorized_headers(client
+            .delete(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
             .error_for_status()
@@ -332,14 +320,9 @@ impl HttpClient {
     pub fn deregister(&self, group_name: &str) -> io::Result<()> {
         let server_url = format!("{}/{}", self.server_addr, group_name);
 
-        let auth_value = format!("{}:{}", self.server_username, self.server_password);
-        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
-        let auth_header = format!("Basic {}", auth_encoded);
-
         let client = Client::new();
-        let response = client
-            .delete(&server_url)
-            .header("Authorization", auth_header.clone())
+        let response = self.authorized_headers(client
+            .delete(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
             .error_for_status()
@@ -358,15 +341,10 @@ impl HttpClient {
     pub fn send_fcm_notification(&self, notification: Vec<u8>) -> io::Result<()> {
         let server_url = format!("{}/fcm_notification", self.server_addr);
 
-        let auth_value = format!("{}:{}", self.server_username, self.server_password);
-        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
-        let auth_header = format!("Basic {}", auth_encoded);
-
         let client = Client::new();
-        let response = client
-            .post(server_url)
+        let response = self.authorized_headers(client
+            .post(server_url))
             .header("Content-Type", "application/octet-stream")
-            .header("Authorization", auth_header)
             .body(notification)
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
@@ -385,15 +363,10 @@ impl HttpClient {
     pub fn livestream_start(&self, group_name: &str) -> io::Result<()> {
         let server_url = format!("{}/livestream/{}", self.server_addr, group_name);
 
-        let auth_value = format!("{}:{}", self.server_username, self.server_password);
-        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
-        let auth_header = format!("Basic {}", auth_encoded);
-
         let client = Client::new();
-        let response = client
-            .post(server_url)
+        let response = self.authorized_headers(client
+            .post(server_url))
             .header("Content-Type", "application/octet-stream")
-            .header("Authorization", auth_header)
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
@@ -411,18 +384,13 @@ impl HttpClient {
     pub fn livestream_check(&self, group_name: &str) -> io::Result<()> {
         let server_url = format!("{}/livestream/{}", self.server_addr, group_name);
 
-        let auth_value = format!("{}:{}", self.server_username, self.server_password);
-        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
-        let auth_header = format!("Basic {}", auth_encoded);
-
         let client = Client::builder()
             .timeout(None) // Disable timeout to allow long-polling
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = client
-            .get(&server_url)
-            .header("Authorization", auth_header)
+        let response = self.authorized_headers(client
+            .get(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
             .error_for_status()
@@ -457,19 +425,14 @@ impl HttpClient {
             self.server_addr, group_name, chunk_number
         );
 
-        let auth_value = format!("{}:{}", self.server_username, self.server_password);
-        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
-        let auth_header = format!("Basic {}", auth_encoded);
-
         let client = Client::builder()
             .timeout(Duration::from_secs(120))
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = client
-            .post(server_url)
+        let response = self.authorized_headers(client
+            .post(server_url))
             .header("Content-Type", "application/octet-stream")
-            .header("Authorization", auth_header)
             .body(data)
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
@@ -500,18 +463,13 @@ impl HttpClient {
         );
         let server_del_url = format!("{}/{}/{}", self.server_addr, group_name, chunk_number);
 
-        let auth_value = format!("{}:{}", self.server_username, self.server_password);
-        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
-        let auth_header = format!("Basic {}", auth_encoded);
-
         let client = Client::builder()
             .timeout(Duration::from_secs(120))
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = client
-            .get(&server_url)
-            .header("Authorization", auth_header.clone())
+        let response = self.authorized_headers(client
+            .get(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
             .error_for_status()
@@ -529,9 +487,8 @@ impl HttpClient {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
             .to_vec();
 
-        let del_response = client
-            .delete(&server_del_url)
-            .header("Authorization", auth_header)
+        let del_response = self.authorized_headers(client
+            .delete(&server_del_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
             .error_for_status()
@@ -552,15 +509,10 @@ impl HttpClient {
     pub fn livestream_end(&self, group_name: &str) -> io::Result<()> {
         let server_url = format!("{}/livestream_end/{}", self.server_addr, group_name);
 
-        let auth_value = format!("{}:{}", self.server_username, self.server_password);
-        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
-        let auth_header = format!("Basic {}", auth_encoded);
-
         let client = Client::new();
-        let response = client
-            .post(server_url)
+        let response = self.authorized_headers(client
+            .post(server_url))
             .header("Content-Type", "application/octet-stream")
-            .header("Authorization", auth_header)
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
@@ -578,15 +530,10 @@ impl HttpClient {
     pub fn config_command(&self, group_name: &str, command: Vec<u8>) -> io::Result<()> {
         let server_url = format!("{}/config/{}", self.server_addr, group_name);
 
-        let auth_value = format!("{}:{}", self.server_username, self.server_password);
-        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
-        let auth_header = format!("Basic {}", auth_encoded);
-
         let client = Client::new();
-        let response = client
-            .post(server_url)
+        let response = self.authorized_headers(client
+            .post(server_url))
             .header("Content-Type", "application/octet-stream")
-            .header("Authorization", auth_header)
             .body(command)
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
@@ -607,18 +554,13 @@ impl HttpClient {
     pub fn config_check(&self, group_name: &str) -> io::Result<Vec<u8>> {
         let server_url = format!("{}/config/{}", self.server_addr, group_name);
 
-        let auth_value = format!("{}:{}", self.server_username, self.server_password);
-        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
-        let auth_header = format!("Basic {}", auth_encoded);
-
         let client = Client::builder()
             .timeout(None) // Disable timeout to allow long-polling
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = client
-            .get(&server_url)
-            .header("Authorization", auth_header)
+        let response = self.authorized_headers(client
+            .get(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
             .error_for_status()
@@ -647,15 +589,10 @@ impl HttpClient {
     pub fn config_response(&self, group_name: &str, response: Vec<u8>) -> io::Result<()> {
         let server_url = format!("{}/config_response/{}", self.server_addr, group_name);
 
-        let auth_value = format!("{}:{}", self.server_username, self.server_password);
-        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
-        let auth_header = format!("Basic {}", auth_encoded);
-
         let client = Client::new();
-        let response = client
-            .post(server_url)
+        let response = self.authorized_headers(client
+            .post(server_url))
             .header("Content-Type", "application/octet-stream")
-            .header("Authorization", auth_header)
             .body(response)
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
@@ -674,18 +611,13 @@ impl HttpClient {
     pub fn fetch_config_response(&self, group_name: &str) -> io::Result<Vec<u8>> {
         let server_url = format!("{}/config_response/{}", self.server_addr, group_name);
 
-        let auth_value = format!("{}:{}", self.server_username, self.server_password);
-        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
-        let auth_header = format!("Basic {}", auth_encoded);
-
         let client = Client::builder()
             .timeout(Duration::from_secs(120))
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        let response = client
-            .get(&server_url)
-            .header("Authorization", auth_header.clone())
+        let response = self.authorized_headers(client
+            .get(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
             .error_for_status()

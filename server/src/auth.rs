@@ -107,7 +107,9 @@ impl<'r> FromRequest<'r> for BasicAuth {
     type Error = ();
 
     async fn from_request(req: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let client_header = req.headers().get_one("Client-Version");
         let auth_header = req.headers().get_one("Authorization");
+
         let user_store = req.guard::<&State<UserStore>>().await.unwrap();
         let fail_store = req.guard::<&State<FailStore>>().await.unwrap();
 
@@ -120,6 +122,18 @@ impl<'r> FromRequest<'r> for BasicAuth {
             if is_locked(fail_store, &ip) {
                 return Outcome::Error((Status::TooManyRequests, ()));
             }
+        }
+
+        // We run a check on client-provided version header to ensure a match.
+        // If it fails, we return a 409 (Conflict).
+        // It must be provided for all, or we cannot guarantee version-compatibility.
+        if let Some(client_version) = client_header {
+            let version = env!("CARGO_PKG_VERSION");
+            if client_version != version {
+                return Outcome::Error((Status::Conflict, ()));
+            }
+        } else {
+            return Outcome::Error((Status::BadRequest, ()));
         }
 
         if let Some(auth_value) = auth_header {
