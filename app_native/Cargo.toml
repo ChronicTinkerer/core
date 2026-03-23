@@ -7,13 +7,13 @@ authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 [dependencies]
 secluso-client-lib = { path = "../client_lib" }
 secluso-client-server-lib = { path = "../client_server_lib" }
-bincode = "1.2.1"
+bincode = "1.3.3"
 rand="0.8"
-lazy_static = "1.4"
-serde_json="1.0.140"
-log = { version="0.4.27", features=["kv"] }
-anyhow = "^1.0.64" # Locked to this version due to flutter_rust_bridge usage in app
-flutter_rust_bridge = "=2.10.0"
+lazy_static = "1.5"
+serde_json="1.0.149"
+log = { version="0.4.29", features=["kv"] }
+anyhow = "1.0.102"
+flutter_rust_bridge = "=2.11.1"
 serde = "1.0"
 serde_derive = "1.0"
 openmls = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.8.0" }
