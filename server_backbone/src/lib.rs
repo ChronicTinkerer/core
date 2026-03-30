@@ -192,6 +192,12 @@ pub mod types {
         pub platform: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub ios_relay_binding: Option<IosRelayBinding>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub unifiedpush_endpoint_url: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub unifiedpush_pub_key: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub unifiedpush_auth: Option<String>,
     }
 
     #[derive(Debug, Serialize, Deserialize, Clone)]

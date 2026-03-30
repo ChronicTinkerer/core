@@ -39,6 +39,7 @@ use std::time::Instant;
 pub mod auth;
 pub mod fcm;
 pub mod security;
+pub mod unifiedpush;
 
 use self::auth::{initialize_users, BasicAuth, FailStore};
 use self::fcm::send_notification;
@@ -122,6 +123,22 @@ async fn persist_pair_notification_target(
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     fs::write(target_path, target_json).await?;
     Ok(())
+}
+
+async fn load_notification_target(
+    root: &Path,
+) -> io::Result<Option<NotificationTarget>> {
+    let target_path = root.join("notification_target.json");
+    check_path_sandboxed(root, &target_path)?;
+
+    if !target_path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(target_path).await?;
+    let parsed = serde_json::from_str::<NotificationTarget>(&raw)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    Ok(Some(parsed))
 }
 
 #[post("/pair", data = "<data>")]
@@ -464,27 +481,66 @@ async fn upload_notification_target(
 #[get("/notification_target")]
 async fn retrieve_notification_target(auth: BasicAuth) -> Option<Json<NotificationTarget>> {
     let root = Path::new("data").join(&auth.username);
-    let target_path = root.join("notification_target.json");
-    check_path_sandboxed(&root, &target_path).ok()?;
-
-    let raw = fs::read_to_string(target_path).await.ok()?;
-    let parsed = serde_json::from_str::<NotificationTarget>(&raw).ok()?;
+    let parsed = load_notification_target(&root).await.ok()??;
     Some(Json(parsed))
 }
 
 #[post("/fcm_notification", data = "<data>")]
 async fn send_fcm_notification(data: Data<'_>, auth: BasicAuth) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
+    let notification_target = load_notification_target(&root).await?;
+    let notification_msg = data.open(8.kibibytes()).into_bytes().await?;
+
+    if let Some(target) = notification_target.as_ref() {
+        if target.platform.eq_ignore_ascii_case("android_unified") {
+            let endpoint_url = match target.unifiedpush_endpoint_url.as_deref() {
+                Some(value) if !value.trim().is_empty() => value,
+                _ => {
+                    debug!("Skipping UnifiedPush notification; endpoint URL not available");
+                    return Ok("ok".to_string());
+                }
+            };
+            let pub_key = match target.unifiedpush_pub_key.as_deref() {
+                Some(value) if !value.trim().is_empty() => value,
+                _ => {
+                    debug!("Skipping UnifiedPush notification; public key not available");
+                    return Ok("ok".to_string());
+                }
+            };
+            let auth_secret = match target.unifiedpush_auth.as_deref() {
+                Some(value) if !value.trim().is_empty() => value,
+                _ => {
+                    debug!("Skipping UnifiedPush notification; auth secret not available");
+                    return Ok("ok".to_string());
+                }
+            };
+
+            match unifiedpush::send_notification(
+                endpoint_url,
+                pub_key,
+                auth_secret,
+                notification_msg.as_ref(),
+            )
+            .await
+            {
+                Ok(_) => {
+                    debug!("UnifiedPush notification sent successfully.");
+                }
+                Err(e) => {
+                    debug!("Failed to send UnifiedPush notification: {}", e);
+                }
+            }
+            return Ok("ok".to_string());
+        }
+    }
+
     let token_path = root.join("fcm_token");
     check_path_sandboxed(&root, &token_path)?;
-
     if !token_path.exists() {
         return Err(io::Error::other("Error: FCM token not available."));
     }
     let token = fs::read_to_string(token_path).await?;
 
-    // FIXME: hardcoded max size
-    let notification_msg = data.open(8.kibibytes()).into_bytes().await?;
     task::block_in_place(|| {
         // FIXME: caller won't know if the notification failed to send
 

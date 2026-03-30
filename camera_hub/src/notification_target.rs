@@ -58,6 +58,9 @@ pub fn refresh_notification_target(
                     let placeholder = NotificationTarget {
                         platform: target.platform.clone(),
                         ios_relay_binding: None,
+                        unifiedpush_endpoint_url: None,
+                        unifiedpush_pub_key: None,
+                        unifiedpush_auth: None,
                     };
                     if let Err(e) = persist_notification_target(state_dir, &placeholder) {
                         error!("Failed to persist iOS notification placeholder: {e}");
@@ -96,6 +99,9 @@ pub fn send_notification(
                         let placeholder = NotificationTarget {
                             platform: target.platform.clone(),
                             ios_relay_binding: None,
+                            unifiedpush_endpoint_url: None,
+                            unifiedpush_pub_key: None,
+                            unifiedpush_auth: None,
                         };
                         if let Err(clear_err) = persist_notification_target(state_dir, &placeholder)
                         {

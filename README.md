@@ -20,7 +20,7 @@ Secluso has three components:
 * A **camera hub** that records, encrypts, and sends videos.
 * A **mobile app** that allows one to receive event notifications (e.g., person or motion) from the camera as well as livestream the camera remotely.
 * An **untrusted server** that relays (encrypted) messages between the hub and the app.
-* An **untrusted notification transport** used to deliver encrypted motion notifications to the app. On Android this is Firebase Cloud Messaging (FCM). On iOS this is the Secluso public iOS relay, which forwards notifications to Apple's native push notification service.
+* An **untrusted notification transport** used to deliver encrypted motion notifications to the app. On Android this is Firebase Cloud Messaging (FCM) or UnifiedPush (choice is up to you). On iOS this is the Secluso public iOS relay, which forwards notifications to Apple's native push notification service.
 
 
 ## Camera types

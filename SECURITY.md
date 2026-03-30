@@ -23,7 +23,7 @@ It then provides the following guarantees:
 * It guarantees that only the hub and the mobile app have access to unecrypted videos.
 * It guarantees that the server cannot decrypt the videos.
 * It provides forward secrecy and post-compromise security through MLS. 
-* It does NOT currently hide the timing of events, livestreams, or notification delivery from the adversary (who we assume may control the server and the notification transport). On Android, that transport is FCM. On iOS, that transport is the Secluso iOS relay and APNS.
+* It does NOT currently hide the timing of events, livestreams, or notification delivery from the adversary (who we assume may control the server and the notification transport). On Android, that transport is FCM/UnifiedPush. On iOS, that transport is the Secluso iOS relay and APNS.
 
 
 ## End-to-End Encryption
@@ -47,7 +47,7 @@ Secluso leverages MLS by breaking down videos into small chunks that are then en
 A key feature of MLS is its support for group messaging.
 In Secluso, in the pairing phase, the camera creates an MLS group and then invites the app to join the group.
 This then allows the camera and the app to exchange encrypted messages.
-Secluso in fact uses multiple MLS groups, one for event-based videos, one for livestream, one for FCM/Secluso Relay notifications, one for configuration messages, and one for video thumbnails.
+Secluso in fact uses multiple MLS groups, one for event-based videos, one for livestream, one for FCM/UnifiedPush/Secluso Relay notifications, one for configuration messages, and one for video thumbnails.
 It only provides post-compromise security for the first two since they are used for transferring videos.
 The rest of the discussion here mainly focuses on these two groups.
 
