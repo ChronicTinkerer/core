@@ -94,14 +94,14 @@ fn generate_user_credentials(dir: &Path, mut server_addr: &str) -> anyhow::Resul
 
     // Save the credentials in a file to be given to the server (delivery service)
     let mut file =
-        fs::File::create(dir.join("/user_credentials")).context("Could not create user_credentials file")?;
+        fs::File::create(dir.join("user_credentials")).context("Could not create user_credentials file")?;
     file.write_all(&credentials).context("Failed to write to file")?;
 
     // Save the credentials_full (which includes the server addr) as QR code to be shown to the app
     let code = QrCode::new(&credentials_full).context("Failed to generate QR code")?;
     let image = code.render::<Luma<u8>>().build();
     image
-        .save(dir.join("/user_credentials_qrcode.png"))
+        .save(dir.join("user_credentials_qrcode.png"))
         .context("Failed to save image")?;
 
     // Save the credentials_full in a file to be used for testing with the example app
